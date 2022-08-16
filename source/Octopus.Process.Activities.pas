@@ -19,21 +19,14 @@ type
     procedure ExecuteInstance(Context: TActivityExecutionContext); virtual; abstract;
   end;
 
-  TActivityExecutionContext = class
+  TActivityExecutionContext = class(TTokenExecutionContext)
   private
-    FToken: TToken;
     FDone: boolean;
-    FInstance: IProcessInstanceData;
-    FError: boolean;
+    function GetNode: TFlowNode;
   public
     constructor Create(AContext: TExecutionContext; AToken: TToken);
-    function GetVariable(Name: string): TValue;
-    procedure SetVariable(Name: string; Value: TValue);
-    function GetLocalVariable(Name: string): TValue;
-    procedure SetLocalVariable(Name: string; Value: TValue);
-    property Token: TToken read FToken;
     property Done: boolean read FDone write FDone;
-    property Error: boolean read FError write FError;
+    property Node: TFlowNode read GetNode;
   end;
 
   TActivityClass = class of TActivity;
@@ -48,9 +41,19 @@ type
     procedure ExecuteInstance(Context: TActivityExecutionContext); override;
   end;
 
+  TActivityExecutor = class
+  strict private
+    FContext: TActivityExecutionContext;
+  public
+    constructor Create(Context: TActivityExecutionContext); virtual;
+    procedure Execute; virtual; abstract;
+    property Context: TActivityExecutionContext read FContext;
+  end;
+
 implementation
 
 uses
+  Octopus.Exceptions,
   Octopus.Resources;
 
 { TAnonymousActivity }
@@ -63,7 +66,8 @@ end;
 
 procedure TAnonymousActivity.ExecuteInstance(Context: TActivityExecutionContext);
 begin
-  FExecuteProc(Context);
+  if Assigned(FExecuteProc) then
+    FExecuteProc(Context);
 end;
 
 { TActivity }
@@ -71,16 +75,14 @@ end;
 procedure TActivity.Execute(Context: TExecutionContext);
 var
   token: TToken;
+  tokens: TList<TToken>;
 begin
-  token := Context.GetIncomingToken;
-  while token <> nil do
-  begin
-    ExecuteActivityInstance(token, Context);
-
-    if Context.Error then // TODO: error handling
-      exit;
-
-    token := Context.GetIncomingToken;
+  tokens := Context.GetTokens(TTokens.Active(Self.Id));
+  try
+    for token in tokens do
+      ExecuteActivityInstance(token, Context);
+  finally
+    tokens.Free;
   end;
 end;
 
@@ -92,25 +94,19 @@ begin
   try
     ExecuteInstance(aec);
 
-    if aec.Error then // TODO: error handling
-    begin
-      Context.Error := aec.Error;
-      exit;
-    end;
-
     if aec.Done then
     begin
-      Context.Instance.RemoveToken(Token);
+      Context.RemoveToken(Token);
 
-      ScanTransitions(
-        procedure(Transition: TTransition)
+      ScanTransitions(Context, Token,
+        procedure(Ctxt: TTransitionExecutionContext)
         begin
-          if Transition.Evaluate(Context) then
-            Context.Instance.AddToken(Transition);
+          if Ctxt.Transition.Evaluate(Ctxt) then
+            Context.AddToken(Ctxt.Transition, Token);
         end);
     end
     else
-      Context.PersistToken(Token);
+      Context.DeactivateToken(Token);
   finally
     aec.Free;
   end;
@@ -120,30 +116,21 @@ end;
 
 constructor TActivityExecutionContext.Create(AContext: TExecutionContext; AToken: TToken);
 begin
-  FInstance := AContext.Instance;
-  FToken := AToken;
+  inherited Create(AContext, AToken);
   FDone := true;
-  FError := false;
 end;
 
-function TActivityExecutionContext.GetLocalVariable(Name: string): TValue;
+function TActivityExecutionContext.GetNode: TFlowNode;
 begin
-  result := FInstance.GetLocalVariable(Token, Name);
+  Result := Context.Node;
 end;
 
-function TActivityExecutionContext.GetVariable(Name: string): TValue;
-begin
-  result := FInstance.GetVariable(Name)
-end;
+{ TActivityExecutor }
 
-procedure TActivityExecutionContext.SetLocalVariable(Name: string; Value: TValue);
+constructor TActivityExecutor.Create(Context: TActivityExecutionContext);
 begin
-  FInstance.SetLocalVariable(Token, Name, Value);
-end;
-
-procedure TActivityExecutionContext.SetVariable(Name: string; Value: TValue);
-begin
-  FInstance.SetVariable(Name, Value);
+  inherited Create;
+  FContext := Context;
 end;
 
 end.

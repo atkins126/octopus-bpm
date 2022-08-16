@@ -1,5 +1,7 @@
 unit Octopus.Process.Builder;
 
+{$I Octopus.inc}
+
 interface
 
 uses
@@ -20,38 +22,43 @@ type
     FElement: TFlowElement;
     function GetCurrentNode: TFlowNode;
     function GetCurrentTransition: TTransition;
+    function GetRoot: TProcessBuilder;
+    procedure AutoId(Element: TFlowElement);
   protected
     function BuildItem(AElement: TFlowElement; Linked: boolean): TProcessBuilder;
     property CurrentElement: TFlowElement read FElement;
     property CurrentNode: TFlowNode read GetCurrentNode;
     property CurrentTransition: TTransition read GetCurrentTransition;
+    property Root: TProcessBuilder read GetRoot;
   public
     constructor Create(AProcess: TWorkflowProcess);
     destructor Destroy; override;
+    class function CreateProcess: TProcessBuilder;
     function AddNode(Node: TFlowNode): TFlowNode;
     function AddTransition(Source, Target: TFlowNode): TTransition;
     function AddStartEvent: TStartEvent;
     function AddEndEvent: TEndEvent;
-    function AddVariable(AName: string; ADefaultValue: TValue): TVariable;
+    function AddVariable(const AName: string; ADefaultValue: TValue): TVariable;
 
     // fluent interface methods
     function Activity(AClass: TActivityClass): TProcessBuilder; overload;
     function Activity(AActivity: TActivity): TProcessBuilder; overload;
-    function Condition(AProc: TEvaluateProc): TProcessBuilder;
+    function Condition(ACondition: TCondition): TProcessBuilder;
     function EndEvent: TProcessBuilder;
     function ExclusiveGateway: TProcessBuilder;
     function Get(out ANode: TFlowNode): TProcessBuilder;
     function GotoElement(AElement: TFlowElement): TProcessBuilder; overload;
-    function GotoElement(AId: string): TProcessBuilder; overload;
+    function GotoElement(const AId: string): TProcessBuilder; overload;
     function GotoLastGateway: TProcessBuilder;
-    function Id(AId: string): TProcessBuilder;
+    function Id(const AId: string): TProcessBuilder;
     function InclusiveGateway: TProcessBuilder;
     function LinkTo(ANode: TFlowNode): TProcessBuilder; overload;
-    function LinkTo(ElementId: string): TProcessBuilder; overload;
+    function LinkTo(const ElementId: string): TProcessBuilder; overload;
     function ParallelGateway: TProcessBuilder;
     function StartEvent: TProcessBuilder;
-    function Variable(AName: string): TProcessBuilder; overload;
-    function Variable(AName: string; ADefaultValue: TValue): TProcessBuilder; overload;
+    function Variable(const AName: string): TProcessBuilder; overload;
+    function Variable(const AName: string; ADefaultValue: TValue): TProcessBuilder; overload;
+    function Done: TWorkflowProcess;
   end;
 
 implementation
@@ -75,12 +82,13 @@ function TProcessBuilder.AddNode(Node: TFlowNode): TFlowNode;
 begin
   FProcess.Nodes.Add(Node);
   result := Node;
+  AutoId(Node);
 end;
 
 function TProcessBuilder.AddEndEvent: TEndEvent;
 begin
   result := TEndEvent.Create;
-  FProcess.Nodes.Add(result);
+  AddNode(result);
 end;
 
 function TProcessBuilder.AddTransition(Source, Target: TFlowNode): TTransition;
@@ -89,14 +97,20 @@ begin
   result.Source := Source;
   result.Target := Target;
   FProcess.Transitions.Add(result);
+  AutoId(result);
 end;
 
-function TProcessBuilder.AddVariable(AName: string; ADefaultValue: TValue): TVariable;
+function TProcessBuilder.AddVariable(const AName: string; ADefaultValue: TValue): TVariable;
 begin
   result := TVariable.Create;
   result.Name := AName;
-  result.DefaultValue := ADefaultValue;
+  result.Value := ADefaultValue;
   FProcess.Variables.Add(result);
+end;
+
+procedure TProcessBuilder.AutoId(Element: TFlowElement);
+begin
+  FProcess.AutoId(Element);
 end;
 
 function TProcessBuilder.BuildItem(AElement: TFlowElement; Linked: boolean): TProcessBuilder;
@@ -116,12 +130,12 @@ begin
   FItems.Add(result);
 end;
 
-function TProcessBuilder.Condition(AProc: TEvaluateProc): TProcessBuilder;
+function TProcessBuilder.Condition(ACondition: TCondition): TProcessBuilder;
 var
   transition: TTransition;
 begin
   transition := AddTransition(CurrentNode, nil);
-  transition.SetCondition(AProc);
+  transition.Condition := ACondition;
   result := BuildItem(transition, false);
 end;
 
@@ -131,10 +145,21 @@ begin
   FItems := TObjectList<TProcessBuilder>.Create;
 end;
 
+class function TProcessBuilder.CreateProcess: TProcessBuilder;
+begin
+  Result := TProcessBuilder.Create(TWorkflowProcess.Create);
+end;
+
 destructor TProcessBuilder.Destroy;
 begin
   FItems.Free;
   inherited;
+end;
+
+function TProcessBuilder.Done: TWorkflowProcess;
+begin
+  Result := FProcess;
+  Root.Free;
 end;
 
 function TProcessBuilder.EndEvent: TProcessBuilder;
@@ -169,7 +194,14 @@ begin
     raise Exception.Create(SBuilderCurrentTransitionError);
 end;
 
-function TProcessBuilder.GotoElement(AId: string): TProcessBuilder;
+function TProcessBuilder.GetRoot: TProcessBuilder;
+begin
+  Result := Self;
+  while Result.FParent <> nil do
+    Result := Result.FParent;
+end;
+
+function TProcessBuilder.GotoElement(const AId: string): TProcessBuilder;
 begin
   if Assigned(FElement) then
     if SameText(FElement.Id, AId) then
@@ -199,7 +231,7 @@ begin
   result := nil;
 end;
 
-function TProcessBuilder.Id(AId: string): TProcessBuilder;
+function TProcessBuilder.Id(const AId: string): TProcessBuilder;
 begin
   if Assigned(FElement) then
     FElement.Id := AId;
@@ -211,15 +243,9 @@ begin
   result := BuildItem(AddNode(TInclusiveGateway.Create), true);
 end;
 
-function TProcessBuilder.LinkTo(ElementId: string): TProcessBuilder;
-var
-  node: TFlowNode;
+function TProcessBuilder.LinkTo(const ElementId: string): TProcessBuilder;
 begin
-  node := FProcess.GetNode(ElementId);
-  if Assigned(node) then
-    result := BuildItem(node, true)
-  else
-    raise Exception.CreateFmt(SErrorElementNotFound, [ElementId]);
+  result := BuildItem(FProcess.GetNode(ElementId), true);
 end;
 
 function TProcessBuilder.LinkTo(ANode: TFlowNode): TProcessBuilder;
@@ -237,12 +263,12 @@ begin
   result := BuildItem(AddStartEvent, false);
 end;
 
-function TProcessBuilder.Variable(AName: string): TProcessBuilder;
+function TProcessBuilder.Variable(const AName: string): TProcessBuilder;
 begin
   result := Variable(AName, TValue.Empty);
 end;
 
-function TProcessBuilder.Variable(AName: string; ADefaultValue: TValue): TProcessBuilder;
+function TProcessBuilder.Variable(const AName: string; ADefaultValue: TValue): TProcessBuilder;
 begin
   AddVariable(AName, ADefaultValue);
   result := Self;
@@ -251,7 +277,7 @@ end;
 function TProcessBuilder.AddStartEvent: TStartEvent;
 begin
   result := TStartEvent.Create;
-  FProcess.Nodes.Add(result);
+  AddNode(result);
 end;
 
 end.

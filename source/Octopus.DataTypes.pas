@@ -14,6 +14,7 @@ type
     FName: string;
     FNativeType: PTypeInfo;
   public
+    constructor Create(const AName: string; ANativeType: PTypeInfo);
     property Name: string read FName write FName;
     property NativeType: PTypeInfo read FNativeType write FNativeType;
   end;
@@ -23,7 +24,7 @@ type
     class var
       FDefault: TOctopusDataTypes;
   private
-    FRegisteredTypes: TObjectDictionary<string,TOctopusDataType>;
+    FRegisteredTypes: TObjectDictionary<string, TOctopusDataType>;
     function NativeTypeName(AType: PTypeInfo): string;
     procedure RegisterDefaultDataTypes;
   public
@@ -32,47 +33,24 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure RegisterType(DataType: TOctopusDataType);
-    function Find(Name: string): TOctopusDataType; overload;
+    procedure RegisterType(const Name: string; TypeInfo: PTypeInfo);
+    function Find(const Name: string): TOctopusDataType; overload;
     function Find(NativeType: PTypeInfo): TOctopusDataType; overload;
-    function Get(Name: string): TOctopusDataType; overload;
+    function Get(const Name: string): TOctopusDataType; overload;
     function Get(NativeType: PTypeInfo): TOctopusDataType; overload;
-  end;
-
-  TOctopusString = class(TOctopusDataType)
-  public
-    constructor Create;
-  end;
-
-  TOctopusInteger = class(TOctopusDataType)
-  public
-    constructor Create;
-  end;
-
-  TOctopusBoolean = class(TOctopusDataType)
-  public
-    constructor Create;
-  end;
-
-  TOctopusDouble = class(TOctopusDataType)
-  public
-    constructor Create;
-  end;
-
-  TOctopusExtended = class(TOctopusDataType)
-  public
-    constructor Create;
   end;
 
 implementation
 
 uses
+  Octopus.Exceptions,
   Octopus.Resources;
 
 { TOctopusDataTypes }
 
 constructor TOctopusDataTypes.Create;
 begin
+  inherited Create;
   FRegisteredTypes := TObjectDictionary<string,TOctopusDataType>.Create([doOwnsValues]);
   RegisterDefaultDataTypes;
 end;
@@ -90,7 +68,7 @@ begin
   inherited;
 end;
 
-function TOctopusDataTypes.Find(Name: string): TOctopusDataType;
+function TOctopusDataTypes.Find(const Name: string): TOctopusDataType;
 begin
   FRegisteredTypes.TryGetValue(Name, result);
 end;
@@ -105,7 +83,7 @@ begin
   result := nil;
 end;
 
-function TOctopusDataTypes.Get(Name: string): TOctopusDataType;
+function TOctopusDataTypes.Get(const Name: string): TOctopusDataType;
 begin
   result := Find(Name);
   if result = nil then
@@ -116,7 +94,7 @@ function TOctopusDataTypes.Get(NativeType: PTypeInfo): TOctopusDataType;
 begin
   result := Find(NativeType);
   if result = nil then
-    raise Exception.CreateFmt(SErrorUnsupportedDataType, [NativeTypeName(NativeType)]);
+    raise EOctopusException.CreateFmt(SErrorUnsupportedDataType, [NativeTypeName(NativeType)]);
 end;
 
 function TOctopusDataTypes.NativeTypeName(AType: PTypeInfo): string;
@@ -125,7 +103,10 @@ var
 begin
   context := TRttiContext.Create;
   try
-    result := context.GetType(AType).QualifiedName;
+    if AType = nil then
+      Result := 'unknown'
+    else
+      Result := context.GetType(AType).QualifiedName;
   finally
     context.Free;
   end;
@@ -133,16 +114,27 @@ end;
 
 procedure TOctopusDataTypes.RegisterDefaultDataTypes;
 begin
-  RegisterType(TOctopusString.Create);
-  RegisterType(TOctopusInteger.Create);
-  RegisterType(TOctopusBoolean.Create);
-  RegisterType(TOctopusDouble.Create);
-  RegisterType(TOctopusExtended.Create);
+  RegisterType('System.string', TypeInfo(string));
+  RegisterType('System.Integer', TypeInfo(Integer));
+  RegisterType('System.Boolean', TypeInfo(Boolean));
+  RegisterType('System.Double', TypeInfo(Double));
+  RegisterType('System.Extended', TypeInfo(Extended));
+  RegisterType('System.Int64', TypeInfo(Int64));
+  RegisterType('System.Byte', TypeInfo(Byte));
+  RegisterType('System.TDateTime', TypeInfo(TDateTime));
+  RegisterType('System.TDate', TypeInfo(TDate));
+  RegisterType('System.TTime', TypeInfo(TTime));
+  RegisterType('System.TArray<System.string>', TypeInfo(TArray<string>));
+  RegisterType('System.TArray<System.Integer>', TypeInfo(TArray<Integer>));
+  RegisterType('System.TArray<System.Boolean>', TypeInfo(TArray<Boolean>));
+  RegisterType('System.TArray<System.Double>', TypeInfo(TArray<Double>));
+  RegisterType('System.TArray<System.Byte>', TypeInfo(TArray<Byte>));
 end;
 
-procedure TOctopusDataTypes.RegisterType(DataType: TOctopusDataType);
+procedure TOctopusDataTypes.RegisterType(const Name: string;
+  TypeInfo: PTypeInfo);
 begin
-  FRegisteredTypes.AddOrSetValue(DataType.Name, DataType);
+  FRegisteredTypes.AddOrSetValue(Name, TOctopusDataType.Create(Name, TypeInfo));
 end;
 
 class destructor TOctopusDataTypes.Destroy;
@@ -151,44 +143,14 @@ begin
     FDefault.Free;
 end;
 
-{ TOctopusString }
+{ TOctopusDataType }
 
-constructor TOctopusString.Create;
+constructor TOctopusDataType.Create(const AName: string;
+  ANativeType: PTypeInfo);
 begin
-  Name := 'string';
-  NativeType := TypeInfo(string);
-end;
-
-{ TOctopusInteger }
-
-constructor TOctopusInteger.Create;
-begin
-  Name := 'integer';
-  NativeType := TypeInfo(integer);
-end;
-
-{ TOctopusBoolean }
-
-constructor TOctopusBoolean.Create;
-begin
-  Name := 'boolean';
-  NativeType := TypeInfo(boolean);
-end;
-
-{ TOctopusDouble }
-
-constructor TOctopusDouble.Create;
-begin
-  Name := 'double';
-  NativeType := TypeInfo(double);
-end;
-
-{ TOctopusExtended }
-
-constructor TOctopusExtended.Create;
-begin
-  Name := 'extended';
-  NativeType := TypeInfo(extended);
+  inherited Create;
+  FName := AName;
+  FNativeType := ANativeType;
 end;
 
 end.

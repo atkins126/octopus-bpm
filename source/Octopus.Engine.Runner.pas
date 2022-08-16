@@ -3,7 +3,8 @@ unit Octopus.Engine.Runner;
 interface
 
 uses
-  Generics.Collections,
+  Generics.Collections, SysUtils, DateUtils,
+  Aurelius.Drivers.Interfaces,
   Octopus.Process;
 
 type
@@ -15,96 +16,146 @@ type
   private
     FProcess: TWorkflowProcess;
     FInstance: IProcessInstanceData;
+    FVariables: IVariablesPersistence;
+    FTokens: ITokensPersistence;
     FStatus: TRunnerStatus;
     FInstanceChecked: boolean;
-    FPersistedTokens: TList<TToken>;
+    FProcessedTokens: TList<string>;
+    FConnection: IDBConnection;
+    FLockTimeoutMS: Integer;
+    FDueDateIntervalMS: Int64;
     procedure PrepareExecution;
-    function ProcessNode(Node: TFlowNode): boolean;
-    function ProcessToken(Token: TToken): boolean;
+    procedure ProcessNode(Node: TFlowNode);
+    procedure InternalExecute;
   public
-    constructor Create(Process: TWorkflowProcess; Instance: IProcessInstanceData);
+    constructor Create(Process: TWorkflowProcess; Instance: IProcessInstanceData;
+      Variables: IVariablesPersistence; Connection: IDBConnection);
     destructor Destroy; override;
     procedure Execute;
     property Status: TRunnerStatus read FStatus;
+    property DueDateIntervalMS: Int64 read FDueDateIntervalMS write FDueDateIntervalMS;
   end;
 
 implementation
 
+uses
+  Octopus.Engine.Tokens,
+  Octopus.Exceptions,
+  Octopus.Resources;
+
 { TWorkflowRunner }
 
-constructor TWorkflowRunner.Create(Process: TWorkflowProcess; Instance: IProcessInstanceData);
+constructor TWorkflowRunner.Create(Process: TWorkflowProcess; Instance: IProcessInstanceData;
+  Variables: IVariablesPersistence; Connection: IDBConnection);
 begin
+  inherited Create;
+  FLockTimeoutMS := 5 * 60 * 1000; // 5 minutes
+  FDueDateIntervalMS := 30 * 60 * 1000; // 30 minutes
+  FProcessedTokens := TList<string>.Create;
   FProcess := Process;
   FInstance := Instance;
+  FVariables := Variables;
+  FConnection := Connection;
 
-  FPersistedTokens := TList<TToken>.Create;
   FInstanceChecked := false;
   FStatus := TRunnerStatus.None;
 end;
 
 destructor TWorkflowRunner.Destroy;
 begin
-  FPersistedTokens.Free;
+  FProcessedTokens.Free;
   inherited;
 end;
 
 procedure TWorkflowRunner.Execute;
 var
-  tokens: TArray<TToken>;
-  token: TToken;
-  done: boolean;
+  Token: TToken;
+  Tokens: TList<TToken>;
+  Finished: Boolean;
+begin
+  FInstance.Lock(FLockTimeoutMS);
+  try
+    FTokens := TContextTokens.Create(FInstance);
+    FInstance.SetDueDate(IncMilliSecond(Now, DueDateIntervalMS));
+    InternalExecute;
+    Finished := True;
+    Tokens := FTokens.LoadTokens;
+    for Token in tokens do
+      if Token.Status <> TTokenStatus.Finished then
+      begin
+        Finished := False;
+        break;
+      end;
+    if Finished then
+      FInstance.Finish;
+  finally
+    FInstance.Unlock;
+  end;
+end;
+
+procedure TWorkflowRunner.InternalExecute;
+var
+  tempToken, token: TToken;
+  tokens: TList<TToken>;
 begin
   PrepareExecution;
 
   repeat
-    done := true;
-    tokens := FInstance.GetTokens;
-
-    for token in tokens do
-    begin
-      if not FPersistedTokens.Contains(token) then
+    // Find next active token to process
+    tokens := FTokens.LoadTokens;
+    token := nil;
+    for tempToken in tokens do
+      if tempToken.Status = TTokenStatus.Active then
       begin
-        done := false;
-        if ProcessToken(token) then
-        begin
-          FStatus := TRunnerStatus.Processed;
-          break;
-        end
-        else
-        begin // TODO: error handling
-          FStatus := TRunnerStatus.Error;
-          exit;
-        end;
+        token := tempToken;
+        break;
       end;
-    end;
-  until done;
+
+    // if no active token remaining, we're done
+    if token = nil then Exit;
+
+    // Avoid infinite loop
+    if FProcessedTokens.Contains(Token.Id) then
+      raise EOctopusException.CreateFmt(SErrorTokenReprocessed, [token.Id]);
+    FProcessedTokens.Add(token.Id);
+
+    ProcessNode(FProcess.GetNode(token.NodeId));
+    FStatus := TRunnerStatus.Processed;
+  until False;
 end;
 
 procedure TWorkflowRunner.PrepareExecution;
 var
-  node: TFlowNode;
+  token: TToken;
+  tokens: TList<TToken>;
 begin
-  FPersistedTokens.Clear;
-  for node in FProcess.Nodes do
-    node.EnumTransitions(FProcess);
+  tokens := FTokens.LoadTokens;
+  for token in tokens do
+    if token.Status = TTokenStatus.Waiting then
+      FTokens.ActivateToken(token);
+  FProcess.Prepare;
+
+  FProcessedTokens.Clear;
 end;
 
-function TWorkflowRunner.ProcessNode(Node: TFlowNode): boolean;
+procedure TWorkflowRunner.ProcessNode(Node: TFlowNode);
 var
   context: TExecutionContext;
+  trans: IDBTransaction;
 begin
-  context := TExecutionContext.Create(FInstance, FProcess, Node, FPersistedTokens);
+  context := TExecutionContext.Create(FVariables, FTokens, FProcess, Node, FConnection);
   try
-    Node.Execute(context);
-    result := not context.Error;
+    trans := FConnection.BeginTransaction;
+    try
+      Node.Execute(context);
+      trans.Commit;
+    except
+      trans.Rollback;
+      raise;
+    end;
   finally
     context.Free;
   end;
-end;
-
-function TWorkflowRunner.ProcessToken(Token: TToken): boolean;
-begin
-  result := ProcessNode(token.Node);
 end;
 
 end.

@@ -70,3 +70,8 @@ __recovery/
 /tests/OctopusTests.res
 /tests/persistence/TestPersistence.res
 /tests/serialization/TestSerialization.res
+tests/persistence/octopus.db
+/packages/dsydney/octopus.res
+Win32/
+demos/Hello/OctopusHello.res
+octopus.res
